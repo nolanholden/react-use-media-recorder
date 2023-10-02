@@ -6,10 +6,16 @@ export type UseMediaRecorderArgs = {
   recordScreen?: boolean;
   customMediaStream?: MediaStream;
   onStart?: () => void;
-  onStop?: (mediaBlob: Blob | null) => void;
+  onStop?: (params: OnStopParams) => void;
   onDataAvailable?: (partialMediaBlob: Blob) => void;
   onError?: (error: unknown) => void;
   mediaRecorderOptions?: MediaRecorderOptions;
+
+  windowOverride?: () => typeof window;
+};
+type OnStopParams = {
+  mediaBlob: Blob | null;
+  mimeType: string;
 };
 
 export type UseMediaRecorderResult = {
@@ -28,7 +34,6 @@ export type UseMediaRecorderResult = {
   liveStream: MediaStream | null;
 
   // internals:
-
   activeMediaRecorder: MediaRecorder | null;
   acquireMediaStream: () => Promise<MediaStream | null>;
   releaseMediaStream: () => void;
@@ -54,7 +59,23 @@ export function useMediaRecorder({
   onError,
   mediaRecorderOptions,
   onDataAvailable,
+  windowOverride,
 }: UseMediaRecorderArgs): UseMediaRecorderResult {
+  const windowRef = useRef<typeof window | null>(null);
+  function getWindow() {
+    if (!windowRef.current) {
+      if (typeof window === "undefined") {
+        throw new Error(
+          `[use-media-recorder] window is not defined the first (and only) time we retrieve it by either calling windowOverride() or falling back to the default \`window\`. (Note: windowOverride ${
+            windowOverride ? "is" : "is NOT"
+          } defined)`,
+        );
+      }
+      windowRef.current = windowOverride ? windowOverride() : window;
+    }
+    return windowRef.current;
+  }
+
   const mediaChunks = useRef<Blob[]>([]);
   const mediaStream = useRef<MediaStream | null>(null);
   const mediaRecorder = useRef<MediaRecorder | null>(null);
@@ -85,19 +106,20 @@ export function useMediaRecorder({
     try {
       const stream = await (async () => {
         if (recordScreen) {
-          const stream = await window.navigator.mediaDevices.getDisplayMedia(
-            mediaStreamConstraints,
-          );
+          const stream =
+            await getWindow().navigator.mediaDevices.getDisplayMedia(
+              mediaStreamConstraints,
+            );
           if (mediaStreamConstraints.audio) {
             const audioStream =
-              await window.navigator.mediaDevices.getUserMedia({
+              await getWindow().navigator.mediaDevices.getUserMedia({
                 audio: mediaStreamConstraints.audio,
               });
             audioStream.getAudioTracks().forEach((t) => stream.addTrack(t));
           }
           return stream;
         } else {
-          return await window.navigator.mediaDevices.getUserMedia(
+          return await getWindow().navigator.mediaDevices.getUserMedia(
             mediaStreamConstraints,
           );
         }
@@ -130,7 +152,7 @@ export function useMediaRecorder({
   }
 
   function handleStop() {
-    const blob = (function () {
+    const [mediaBlob, mimeType] = (function () {
       const chunks = mediaChunks.current;
       if (hasLengthAtLeast(chunks, 1)) {
         const [sampleChunk] = chunks;
@@ -138,15 +160,15 @@ export function useMediaRecorder({
           type: sampleChunk.type,
           ...blobOptions,
         };
-        return new Blob(chunks, blobPropertyBag);
+        return [new Blob(chunks, blobPropertyBag), sampleChunk.type] as const;
       } else {
-        return null;
+        return [null, ""] as const;
       }
     })();
 
     setStatus("stopped");
-    setMediaBlob(blob);
-    onStop?.(blob);
+    setMediaBlob(mediaBlob);
+    onStop?.({ mediaBlob, mimeType });
   }
 
   function handleError(e: Event) {
@@ -170,7 +192,7 @@ export function useMediaRecorder({
     mediaChunks.current = [];
 
     if (stream) {
-      const rec = (mediaRecorder.current = new MediaRecorder(
+      const rec = (mediaRecorder.current = new (getWindow().MediaRecorder)(
         stream,
         mediaRecorderOptions,
       ));
@@ -233,19 +255,19 @@ export function useMediaRecorder({
   }
 
   useEffect(() => {
-    if (!window.MediaRecorder) {
+    if (!getWindow().MediaRecorder) {
       setBrowserSupportError(
         "MediaRecorder is not supported in this browser. Please ensure that you are running the latest version of chrome/firefox/edge.",
       );
       return;
     }
 
-    if (recordScreen && !window.navigator.mediaDevices.getDisplayMedia) {
+    if (recordScreen && !getWindow().navigator.mediaDevices.getDisplayMedia) {
       setBrowserSupportError("This browser does not support screen capturing.");
       return;
     }
 
-    const md = navigator.mediaDevices;
+    const md = getWindow().navigator.mediaDevices;
     if (!md) {
       setBrowserSupportError(
         "The MediaDevices interface is not available on this browser.",
@@ -283,10 +305,11 @@ export function useMediaRecorder({
       }
     }
 
-    if (mediaRecorderOptions?.mimeType) {
-      if (!MediaRecorder.isTypeSupported(mediaRecorderOptions.mimeType)) {
+    const mimeType = mediaRecorderOptions?.mimeType;
+    if (mimeType) {
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
         setBrowserSupportError(
-          `The specified MIME type supplied to MediaRecorder is not supported by this browser.`,
+          `The specified MIME type [${mimeType}] supplied to MediaRecorder is not supported by this browser.`,
         );
         return;
       }

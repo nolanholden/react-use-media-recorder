@@ -1,6 +1,6 @@
 {
   "name": "@nolanholden/use-media-recorder",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Headless React hooks for the MediaStream Recording API for audio, video, and screen recording.",
   "main": "use-media-recorder.js",
   "scripts": {
